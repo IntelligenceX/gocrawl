@@ -330,7 +330,11 @@ func (w *worker) visitURL(ctx *URLContext, res *http.Response) interface{} {
 	var doLinks bool
 
 	// Load a goquery document and call the visitor function
-	if bd, e := ioutil.ReadAll(res.Body); e != nil {
+	r := io.Reader(res.Body)
+	if w.opts.ReadLimit != -1 {
+		r = io.LimitReader(r, w.opts.ReadLimit)
+	}
+	if bd, e := ioutil.ReadAll(r); e != nil {
 		w.opts.Extender.Error(newCrawlError(ctx, e, CekReadBody), w.crawler.Terminate)
 		w.logFunc(LogError, "ERROR reading body %s: %s", ctx.url, e)
 	} else {
@@ -386,6 +390,7 @@ func handleBaseTag(root *url.URL, baseHref string, aHref string) string {
 var (
 	aHrefMatcher    = cascadia.MustCompile("a[href]")
 	baseHrefMatcher = cascadia.MustCompile("base[href]")
+	imgSrcMatcher   = cascadia.MustCompile("img[src]")
 )
 
 // Scrape the document's content to gather all links
@@ -398,6 +403,16 @@ func (w *worker) processLinks(doc *goquery.Document) (result []*url.URL) {
 		}
 		return val
 	})
+	if w.opts.ParseImageTags {
+		imgURLs := doc.FindMatcher(imgSrcMatcher).Map(func(_ int, s *goquery.Selection) string {
+			val, _ := s.Attr("src")
+			if baseURL != "" {
+				val = handleBaseTag(doc.Url, baseURL, val)
+			}
+			return val
+		})
+		urls = append(urls, imgURLs...)
+	}
 	for _, s := range urls {
 		// If href starts with "#", then it points to this same exact URL, ignore (will fail to parse anyway)
 		if len(s) > 0 && !strings.HasPrefix(s, "#") {

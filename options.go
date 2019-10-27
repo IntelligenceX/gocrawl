@@ -15,6 +15,7 @@ const (
 	DefaultCrawlDelay         time.Duration             = 5 * time.Second
 	DefaultIdleTTL            time.Duration             = 10 * time.Second
 	DefaultNormalizationFlags purell.NormalizationFlags = purell.FlagsAllGreedy
+	DefaultReadLimit          int64                     = -1
 )
 
 // Options contains the configuration for a Crawler to customize the
@@ -50,6 +51,9 @@ type Options struct {
 	// further by implementing the ComputeDelay extender function.
 	CrawlDelay time.Duration
 
+	// Max count of bytes to read from the response body. -1 for no limit.
+	ReadLimit int64
+
 	// WorkerIdleTTL is the idle time-to-live allowed for a worker
 	// before it is cleared (its goroutine terminated). The crawl
 	// delay is not part of idle time, this is specifically the time
@@ -75,6 +79,9 @@ type Options struct {
 
 	// Extender is the implementation of hooks to use by the crawler.
 	Extender Extender
+
+	// ParseImageTags specifies whether to parse <img> tags and include in the crawling
+	ParseImageTags bool
 }
 
 // NewOptions creates a new set of Options with default values
@@ -90,11 +97,13 @@ func NewOptions(ext Extender) *Options {
 		DefaultEnqueueChanBuffer,
 		DefaultHostBufferFactor,
 		DefaultCrawlDelay,
+		DefaultReadLimit,
 		DefaultIdleTTL,
 		true,
 		false,
 		DefaultNormalizationFlags,
 		LogError,
 		ext,
+		false,
 	}
 }
