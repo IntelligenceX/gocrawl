@@ -33,7 +33,7 @@ type Extender interface {
 	// receive a URLContext struct.
 	Start(interface{}) interface{}
 	End(error)
-	Error(*CrawlError)
+	Error(*CrawlError, func())
 	Log(LogFlags, LogFlags, string)
 
 	// ComputeDelay is related to a Host only, not to a URLContext, although the FetchInfo
@@ -48,7 +48,7 @@ type Extender interface {
 	FetchedRobots(*URLContext, *http.Response)
 	Filter(*URLContext, bool) bool
 	Enqueued(*URLContext)
-	Visit(*URLContext, *http.Response, *goquery.Document) (interface{}, bool)
+	Visit(*URLContext, *http.Response, *goquery.Document, func()) (interface{}, bool)
 	Visited(*URLContext, interface{})
 	Disallowed(*URLContext)
 }

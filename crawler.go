@@ -25,10 +25,14 @@ type Crawler struct {
 	logFunc         func(LogFlags, string, ...interface{})
 	push            chan *workerResponse
 	enqueue         chan interface{}
-	stop            chan struct{}
 	wg              *sync.WaitGroup
 	pushPopRefCount int
 	visits          int
+
+	// Internal fields for handling graceful termination
+	signalTerminate  bool          // if true, the crawler was signaled for termination
+	channelTerminate chan struct{} // gets closed on termination signal
+	sync.Mutex                     // for sychronized closing of the channel
 
 	// keep lookups in maps, O(1) access time vs O(n) for slice. The empty struct value
 	// is of no use, but this is the smallest type possible - it uses no memory at all.
@@ -100,7 +104,7 @@ func (c *Crawler) init(ctxs []*URLContext) {
 
 	// Create the workers map and the push channel (the channel used by workers
 	// to communicate back to the crawler)
-	c.stop = make(chan struct{})
+	c.channelTerminate = make(chan struct{})
 	if c.Options.SameHostOnly {
 		c.workers, c.push = make(map[string]*worker, hostCount),
 			make(chan *workerResponse, hostCount)
@@ -159,11 +163,11 @@ func (c *Crawler) launchWorker(ctx *URLContext) *worker {
 
 	// Create the worker
 	w := &worker{
+		crawler: c,
 		host:    ctx.normalizedURL.Host,
 		index:   i,
 		push:    c.push,
 		pop:     pop,
-		stop:    c.stop,
 		enqueue: c.enqueue,
 		wg:      c.wg,
 		logFunc: getLogFunc(c.Options.Extender, c.Options.LogFlags, i),
@@ -245,7 +249,7 @@ func (c *Crawler) enqueueUrls(ctxs []*URLContext) (cnt int) {
 				w = c.launchWorker(ctx)
 				// Automatically enqueue the robots.txt URL as first in line
 				if robCtx, e := ctx.getRobotsURLCtx(); e != nil {
-					c.Options.Extender.Error(newCrawlError(ctx, e, CekParseRobots))
+					c.Options.Extender.Error(newCrawlError(ctx, e, CekParseRobots), c.Terminate)
 					c.logFunc(LogError, "ERROR parsing robots.txt from %s: %s", ctx.normalizedURL, e)
 				} else {
 					c.logFunc(LogEnqueued, "enqueue: %s", robCtx.url)
@@ -292,7 +296,7 @@ func (c *Crawler) collectUrls() error {
 		// no valid seeds are enqueued, the crawler stops.
 		if c.pushPopRefCount == 0 && len(c.enqueue) == 0 {
 			c.logFunc(LogInfo, "sending STOP signals...")
-			close(c.stop)
+			c.Terminate()
 			return nil
 		}
 
@@ -304,7 +308,7 @@ func (c *Crawler) collectUrls() error {
 				if c.Options.MaxVisits > 0 && c.visits >= c.Options.MaxVisits {
 					// Limit reached, request workers to stop
 					c.logFunc(LogInfo, "sending STOP signals...")
-					close(c.stop)
+					c.Terminate()
 					return ErrMaxVisits
 				}
 			}
@@ -312,6 +316,11 @@ func (c *Crawler) collectUrls() error {
 				// The worker timed out from its Idle TTL delay, remove from active workers
 				delete(c.workers, res.host)
 				c.logFunc(LogInfo, "worker for host %s cleared on idle policy", res.host)
+
+				// no more workers? if nothing todo, terminate crawler
+				if len(c.workers) == 0 {
+					c.Terminate()
+				}
 			} else {
 				c.enqueueUrls(c.toURLContexts(res.harvestedURLs, res.ctx.url))
 				c.pushPopRefCount--
@@ -322,20 +331,21 @@ func (c *Crawler) collectUrls() error {
 			ctxs := c.toURLContexts(enq, nil)
 			c.logFunc(LogTrace, "receive url(s) to enqueue %v", toStringArrayContextURL(ctxs))
 			c.enqueueUrls(ctxs)
-		case <-c.stop:
+		case <-c.channelTerminate:
 			return ErrInterrupted
 		}
 	}
 }
 
-// Stop terminates the crawler.
-func (c *Crawler) Stop() {
-	defer func() {
-		if err := recover(); err != nil {
-			c.logFunc(LogError, "error when manually stopping crawler: %s", err)
-		}
-	}()
+// Terminate sets the termination signal, if not already set. Safe to call multiple times.
+func (c *Crawler) Terminate() {
+	c.Lock()
+	defer c.Unlock()
 
-	// this channel may be closed already
-	close(c.stop)
+	if c.signalTerminate {
+		return
+	}
+
+	c.signalTerminate = true
+	close(c.channelTerminate)
 }

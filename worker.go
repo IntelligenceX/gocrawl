@@ -21,6 +21,8 @@ import (
 // The worker is dedicated to fetching and visiting a given host, respecting
 // this host's robots.txt crawling policies.
 type worker struct {
+	crawler *Crawler
+
 	// Worker identification
 	host  string
 	index int
@@ -28,7 +30,6 @@ type worker struct {
 	// Communication channels and sync
 	push    chan<- *workerResponse
 	pop     popChannel
-	stop    chan struct{}
 	enqueue chan<- interface{}
 	wg      *sync.WaitGroup
 
@@ -64,7 +65,7 @@ func (w *worker) run() {
 		}
 
 		select {
-		case <-w.stop:
+		case <-w.crawler.channelTerminate:
 			w.logFunc(LogInfo, "stop signal received.")
 			return
 
@@ -93,7 +94,7 @@ func (w *worker) run() {
 				// No need to check for idle timeout here, no idling while looping through
 				// a batch of URLs.
 				select {
-				case <-w.stop:
+				case <-w.crawler.channelTerminate:
 					w.logFunc(LogInfo, "stop signal received.")
 					return
 				default:
@@ -135,7 +136,7 @@ func (w *worker) requestURL(ctx *URLContext, headRequest bool) {
 			visited = true
 		} else {
 			// Error based on status code received
-			w.opts.Extender.Error(newCrawlErrorMessage(ctx, res.Status, CekHttpStatusCode))
+			w.opts.Extender.Error(newCrawlErrorMessage(ctx, res.Status, CekHttpStatusCode), w.crawler.Terminate)
 			w.logFunc(LogError, "ERROR status code for %s: %s", ctx.url, res.Status)
 		}
 		w.sendResponse(ctx, visited, harvested, false)
@@ -178,7 +179,7 @@ func (w *worker) getRobotsTxtGroup(ctx *URLContext, b []byte, res *http.Response
 	// Reasonable, since by default no robots.txt means full access, so invalid
 	// robots.txt is similar behavior.
 	if e != nil {
-		w.opts.Extender.Error(newCrawlError(nil, e, CekParseRobots))
+		w.opts.Extender.Error(newCrawlError(nil, e, CekParseRobots), w.crawler.Terminate)
 		w.logFunc(LogError, "ERROR parsing robots.txt for host %s: %s", w.host, e)
 	} else {
 		g = data.FindGroup(w.opts.RobotUserAgent)
@@ -237,7 +238,7 @@ func (w *worker) fetchURL(ctx *URLContext, agent string, headRequest bool) (res 
 					// Absolute URLs that point to another host are ok too.
 					if ur, e := ctx.url.Parse(ue.URL); e != nil {
 						// Notify error
-						w.opts.Extender.Error(newCrawlError(nil, e, CekParseRedirectURL))
+						w.opts.Extender.Error(newCrawlError(nil, e, CekParseRedirectURL), w.crawler.Terminate)
 						w.logFunc(LogError, "ERROR parsing redirect URL %s: %s", ue.URL, e)
 					} else {
 						w.logFunc(LogTrace, "redirect to %s from %s, linked from %s", ur, ctx.URL(), ctx.SourceURL())
@@ -253,7 +254,7 @@ func (w *worker) fetchURL(ctx *URLContext, agent string, headRequest bool) (res 
 
 			if !silent {
 				// Notify error
-				w.opts.Extender.Error(newCrawlError(ctx, e, CekFetch))
+				w.opts.Extender.Error(newCrawlError(ctx, e, CekFetch), w.crawler.Terminate)
 				w.logFunc(LogError, "ERROR fetching %s: %s", ctx.url, e)
 			}
 
@@ -303,7 +304,7 @@ func (w *worker) sendResponse(ctx *URLContext, visited bool, harvested interface
 		// If a stop signal has been received, ignore the response, since the push
 		// channel may be full and could block indefinitely.
 		select {
-		case <-w.stop:
+		case <-w.crawler.channelTerminate:
 			w.logFunc(LogInfo, "ignoring send response, will stop.")
 			return
 		default:
@@ -334,11 +335,11 @@ func (w *worker) visitURL(ctx *URLContext, res *http.Response) interface{} {
 		r = io.LimitReader(r, w.opts.ReadLimit)
 	}
 	if bd, e := ioutil.ReadAll(r); e != nil {
-		w.opts.Extender.Error(newCrawlError(ctx, e, CekReadBody))
+		w.opts.Extender.Error(newCrawlError(ctx, e, CekReadBody), w.crawler.Terminate)
 		w.logFunc(LogError, "ERROR reading body %s: %s", ctx.url, e)
 	} else {
 		if node, e := html.Parse(bytes.NewBuffer(bd)); e != nil {
-			w.opts.Extender.Error(newCrawlError(ctx, e, CekParseBody))
+			w.opts.Extender.Error(newCrawlError(ctx, e, CekParseBody), w.crawler.Terminate)
 			w.logFunc(LogError, "ERROR parsing %s: %s", ctx.url, e)
 		} else {
 			doc = goquery.NewDocumentFromNode(node)
@@ -349,12 +350,12 @@ func (w *worker) visitURL(ctx *URLContext, res *http.Response) interface{} {
 	}
 
 	// Visit the document (with nil goquery doc if failed to load)
-	if harvested, doLinks = w.opts.Extender.Visit(ctx, res, doc); doLinks {
+	if harvested, doLinks = w.opts.Extender.Visit(ctx, res, doc, w.crawler.Terminate); doLinks {
 		// Links were not processed by the visitor, so process links
 		if doc != nil {
 			harvested = w.processLinks(doc)
 		} else {
-			w.opts.Extender.Error(newCrawlErrorMessage(ctx, "No goquery document to process links.", CekProcessLinks))
+			w.opts.Extender.Error(newCrawlErrorMessage(ctx, "No goquery document to process links.", CekProcessLinks), w.crawler.Terminate)
 			w.logFunc(LogError, "ERROR processing links %s", ctx.url)
 		}
 	}
