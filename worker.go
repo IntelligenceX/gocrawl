@@ -398,6 +398,7 @@ func (w *worker) processLinks(doc *goquery.Document) (result []*url.URL) {
 	baseURL, _ := doc.FindMatcher(baseHrefMatcher).Attr("href")
 	urls := doc.FindMatcher(aHrefMatcher).Map(func(_ int, s *goquery.Selection) string {
 		val, _ := s.Attr("href")
+		val = strings.TrimSpace(val)
 		if baseURL != "" {
 			val = handleBaseTag(doc.Url, baseURL, val)
 		}
@@ -406,6 +407,7 @@ func (w *worker) processLinks(doc *goquery.Document) (result []*url.URL) {
 	if w.opts.ParseImageTags {
 		imgURLs := doc.FindMatcher(imgSrcMatcher).Map(func(_ int, s *goquery.Selection) string {
 			val, _ := s.Attr("src")
+			val = strings.TrimSpace(val)
 			if baseURL != "" {
 				val = handleBaseTag(doc.Url, baseURL, val)
 			}
