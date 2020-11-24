@@ -244,7 +244,11 @@ func (w *worker) fetchURL(ctx *URLContext, agent string, headRequest bool) (res 
 						w.logFunc(LogTrace, "redirect to %s from %s, linked from %s", ur, ctx.URL(), ctx.SourceURL())
 						// Enqueue the redirect-to URL with the original source
 						rCtx := ctx.cloneForRedirect(ur, w.opts.URLNormalizationFlags)
-						w.enqueue <- rCtx
+
+						// Check if max nested level is reached. This breaks endless redirects that were found to exist.
+						if rCtx.redirectLevel <= w.opts.RedirectFollow {
+							w.enqueue <- rCtx
+						}
 					}
 				}
 			}

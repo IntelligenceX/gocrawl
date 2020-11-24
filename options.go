@@ -16,6 +16,7 @@ const (
 	DefaultIdleTTL            time.Duration             = 10 * time.Second
 	DefaultNormalizationFlags purell.NormalizationFlags = purell.FlagsAllGreedy
 	DefaultReadLimit          int64                     = -1
+	DefaultRedirectFollow     int                       = 3
 )
 
 // Options contains the configuration for a Crawler to customize the
@@ -82,6 +83,9 @@ type Options struct {
 
 	// ParseImageTags specifies whether to parse <img> tags and include in the crawling
 	ParseImageTags bool
+
+	// Max count of redirects to follow for URLs
+	RedirectFollow int
 }
 
 // NewOptions creates a new set of Options with default values
@@ -105,5 +109,6 @@ func NewOptions(ext Extender) *Options {
 		LogError,
 		ext,
 		false,
+		DefaultRedirectFollow,
 	}
 }

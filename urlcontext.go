@@ -30,6 +30,9 @@ type URLContext struct {
 	normalizedURL       *url.URL
 	sourceURL           *url.URL
 	normalizedSourceURL *url.URL
+
+	// Redirect level, how many redirects have been followed to this URL
+	redirectLevel int
 }
 
 // URL returns the URL.
@@ -94,6 +97,7 @@ func (uc *URLContext) cloneForRedirect(dst *url.URL, normFlags purell.Normalizat
 		normalizedURL:       dst,
 		sourceURL:           src,
 		normalizedSourceURL: normalizedSrc,
+		redirectLevel:       uc.redirectLevel + 1,
 	}
 }
 
@@ -133,6 +137,7 @@ func (uc *URLContext) getRobotsURLCtx() (*URLContext, error) {
 		robURL,       // Normalized is same as raw
 		uc.sourceURL, // Source and normalized source is same as for current context
 		uc.normalizedSourceURL,
+		0,
 	}, nil
 }
 
@@ -244,5 +249,6 @@ func (c *Crawler) urlToURLContext(u, src *url.URL) *URLContext {
 		u,
 		rawSrc,
 		src,
+		0,
 	}
 }
