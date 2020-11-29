@@ -130,7 +130,8 @@ func (w *worker) requestURL(ctx *URLContext, headRequest bool) {
 		defer res.Body.Close()
 
 		// Any 2xx status code is good to go
-		if res.StatusCode >= 200 && res.StatusCode < 300 {
+		// 29.11.2020: Allow redirects.
+		if res.StatusCode >= 200 && res.StatusCode <= 308 {
 			// Success, visit the URL
 			harvested = w.visitURL(ctx, res)
 			visited = true
@@ -207,7 +208,6 @@ func (w *worker) setCrawlDelay() {
 // Request the specified URL and return the response.
 func (w *worker) fetchURL(ctx *URLContext, agent string, headRequest bool) (res *http.Response, ok bool) {
 	var e error
-	var silent bool
 
 	for {
 		// Wait for crawl delay, if one is pending.
@@ -225,47 +225,39 @@ func (w *worker) fetchURL(ctx *URLContext, agent string, headRequest bool) (res 
 
 		// Request the URL
 		if res, e = w.opts.Extender.Fetch(ctx, agent, headRequest); e != nil {
-			// Check if this is an ErrEnqueueRedirect, in which case we will enqueue
-			// the redirect-to URL.
-			if ue, ok := e.(*url.Error); ok {
-				// We have a *url.Error, check if it was returned because of an ErrEnqueueRedirect
-				if ue.Err == ErrEnqueueRedirect {
-					// Do not notify this error outside of this if block, this is not a
-					// "real" error. We either enqueue the new URL, or fail to parse it,
-					// and then stop processing the current URL.
-					silent = true
-					// Parse the URL in the context of the original URL (so that relative URLs are ok).
-					// Absolute URLs that point to another host are ok too.
-					if ur, e := ctx.url.Parse(ue.URL); e != nil {
-						// Notify error
-						w.opts.Extender.Error(newCrawlError(nil, e, CekParseRedirectURL), w.crawler.Terminate)
-						w.logFunc(LogError, "ERROR parsing redirect URL %s: %s", ue.URL, e)
-					} else {
-						w.logFunc(LogTrace, "redirect to %s from %s, linked from %s", ur, ctx.URL(), ctx.SourceURL())
-						// Enqueue the redirect-to URL with the original source
-						rCtx := ctx.cloneForRedirect(ur, w.opts.URLNormalizationFlags)
+			// Check if this is an ErrEnqueueRedirect, in which case we will enqueue the redirect-to URL.
+			if ue, ok := e.(*url.Error); ok && ue.Err == ErrEnqueueRedirect {
+				// Special case: Redirect.
+				// Parse the URL in the context of the original URL (so that relative URLs are ok).
+				// Absolute URLs that point to another host are ok too, as there is opts.SameHostOnly.
+				if ur, e := ctx.url.Parse(ue.URL); e != nil {
+					// Notify error
+					w.opts.Extender.Error(newCrawlError(nil, e, CekParseRedirectURL), w.crawler.Terminate)
+					w.logFunc(LogError, "ERROR parsing redirect URL %s: %s", ue.URL, e)
+				} else {
+					w.logFunc(LogTrace, "redirect to %s from %s, linked from %s", ur, ctx.URL(), ctx.SourceURL())
+					// Enqueue the redirect-to URL with the original source
+					rCtx := ctx.cloneForRedirect(ur, w.opts.URLNormalizationFlags)
 
-						// Check if max nested level is reached. This breaks endless redirects that were found to exist.
-						if rCtx.redirectLevel <= w.opts.RedirectFollow {
-							w.enqueue <- rCtx
-						}
+					// Check if max nested level is reached. This breaks endless redirects that were found to exist.
+					if rCtx.redirectLevel <= w.opts.RedirectFollow {
+						w.enqueue <- rCtx
 					}
 				}
-			}
+			} else {
+				// Forward error
 
-			// No fetch, so set to nil
-			w.lastFetch = nil
+				// No fetch, so set to nil
+				w.lastFetch = nil
 
-			if !silent {
 				// Notify error
 				w.opts.Extender.Error(newCrawlError(ctx, e, CekFetch), w.crawler.Terminate)
 				w.logFunc(LogError, "ERROR fetching %s: %s", ctx.url, e)
+
+				// Return from this URL crawl
+				w.sendResponse(ctx, false, nil, false)
+				return nil, false
 			}
-
-			// Return from this URL crawl
-			w.sendResponse(ctx, false, nil, false)
-			return nil, false
-
 		}
 		// Get the fetch duration
 		fetchDuration := time.Now().Sub(now)
